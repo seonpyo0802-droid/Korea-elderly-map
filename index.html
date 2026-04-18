@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>한국 노인 돌봄 서비스 지도</title>
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+
+<style>
+html, body {
+    height: 100%;
+    margin: 0;
+    font-family: Arial, sans-serif;
+}
+
+/* Header styling */
+#header {
+    height: 60px;
+    display: flex;
+    align-items: center;
+    padding-left: 20px;
+    font-size: 22px;
+    font-weight: bold;
+    background-color: #2c3e50;
+    color: white;
+}
+
+/* Map fills remaining space */
+#map {
+    height: calc(100vh - 60px);
+    width: 100%;
+}
+
+/* UI Panels */
+.legend, .control-box, .ranking {
+    background: white;
+    padding: 10px;
+    font-size: 14px;
+}
+
+.ranking {
+    max-height: 200px;
+    overflow-y: auto;
+}
+</style>
+</head>
+
+<body>
+
+<div id="header">한국 노인 돌봄 서비스 지도</div>
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<script src="https://d3js.org/d3.v7.min.js"></script>
+
+<script>
+// ---------------- MAP INIT ----------------
+var map = L.map('map').setView([36.5,127.5],7);
+
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+
+// ---------------- GLOBAL STATE ----------------
+let geoData;
+let geojsonLayer;
+let currentMetric = "ratio";
+let highlightMode = false;
+let scale;
+let threshold = 0;
+
+// ---------------- NAME MAPPING ----------------
+const nameMap = {
+    "Seoul": "서울","Busan": "부산","Daegu": "대구","Incheon": "인천",
+    "Gwangju": "광주","Daejeon": "대전","Ulsan": "울산","Sejong": "세종",
+    "Gyeonggi": "경기","Gyeonggi-do": "경기",
+    "Gangwon": "강원","Gangwon-do": "강원",
+    "North Chungcheong": "충북","South Chungcheong": "충남",
+    "North Jeolla": "전북","South Jeolla": "전남",
+    "North Gyeongsang": "경북","South Gyeongsang": "경남",
+    "Jeju": "제주"
+};
+
+// ---------------- LOAD DATA ----------------
+Promise.all([
+    d3.csv("cleaned_korea_data.csv"),
+    d3.json("kr.json")
+]).then(([data, geo]) => {
+
+    const dataMap = {};
+    data.forEach(d => {
+        d.number_of_elderly = +d.number_of_elderly;
+        d.number_of_centers = +d.number_of_centers;
+        d.ratio = +d.ratio;
+        dataMap[d.region] = d;
+    });
+
+    geo.features.forEach(f => {
+        let kor = nameMap[f.properties.name];
+        if (dataMap[kor]) {
+            f.properties = {...f.properties, ...dataMap[kor]};
+        }
+    });
+
+    geoData = geo;
+
+    updateScale();
+    updateThreshold();
+    drawMap();
+    addLegend();
+    addControls();
+    updateRanking();
+});
+
+// ---------------- SCALE ----------------
+function updateScale() {
+    let values = geoData.features
+        .map(f => +f.properties[currentMetric])
+        .filter(v => !isNaN(v));
+
+    let colors = currentMetric === "ratio"
+        ? d3.schemeReds[6]
+        : d3.schemeBlues[6];
+
+    scale = d3.scaleQuantile()
+        .domain(values)
+        .range(colors);
+}
+
+// ---------------- THRESHOLD ----------------
+function updateThreshold() {
+    let values = geoData.features
+        .map(f => f.properties.ratio)
+        .filter(v => !isNaN(v))
+        .sort((a,b)=>a-b);
+
+    threshold = values[4];
+}
+
+// ---------------- STYLE ----------------
+function style(feature) {
+    let val = +feature.properties[currentMetric];
+
+    if (highlightMode && currentMetric === "ratio") {
+        return {
+            fillColor: val <= threshold ? "red" : "#ccc",
+            weight: 1,
+            color: "white",
+            fillOpacity: 0.85
+        };
+    }
+
+    return {
+        fillColor: scale(val || 0),
+        weight: 1,
+        color: "white",
+        fillOpacity: 0.7
+    };
+}
+
+// ---------------- DRAW ----------------
+function drawMap() {
+    geojsonLayer = L.geoJson(geoData, {
+        style: style,
+        onEachFeature: (f,l)=>{
+            l.bindPopup(`
+                <b>${f.properties.name}</b><br>
+                노인 인구: ${f.properties.number_of_elderly}<br>
+                돌봄 센터: ${f.properties.number_of_centers}<br>
+                비율: ${f.properties.ratio}
+            `);
+        }
+    }).addTo(map);
+}
+
+// ---------------- UPDATE ----------------
+function updateMap() {
+    updateScale();
+    updateThreshold();
+    geojsonLayer.setStyle(style);
+    updateLegend();
+    updateRanking();
+}
+
+// ---------------- LEGEND ----------------
+let legendControl;
+
+function addLegend() {
+    legendControl = L.control({position:"bottomright"});
+
+    legendControl.onAdd = function() {
+        return L.DomUtil.create("div","legend");
+    };
+
+    legendControl.addTo(map);
+    updateLegend();
+}
+
+function updateLegend() {
+    let div = document.querySelector(".legend");
+    let colors = scale.range();
+
+    div.innerHTML = "<b>범례</b><br>";
+
+    colors.forEach(c=>{
+        div.innerHTML += `
+        <div style="display:flex;align-items:center;">
+            <div style="background:${c};width:20px;height:10px;margin-right:5px;"></div>
+        </div>`;
+    });
+
+    div.innerHTML += "<br>낮음 → 높음";
+}
+
+// ---------------- CONTROLS ----------------
+function addControls() {
+    let control = L.control({position:"topright"});
+
+    control.onAdd = function() {
+        let div = L.DomUtil.create("div","control-box");
+
+        div.innerHTML = `
+        <b>데이터 선택</b><br>
+        <select id="metric">
+            <option value="ratio">비율</option>
+            <option value="number_of_elderly">노인 인구</option>
+            <option value="number_of_centers">센터 수</option>
+        </select><br><br>
+
+        <label>
+            <input type="checkbox" id="highlight">
+            취약 지역 강조
+        </label>
+        `;
+
+        return div;
+    };
+
+    control.addTo(map);
+
+    document.getElementById("metric").onchange = e=>{
+        currentMetric = e.target.value;
+        updateMap();
+    };
+
+    document.getElementById("highlight").onchange = e=>{
+        highlightMode = e.target.checked;
+        updateMap();
+    };
+}
+
+// ---------------- RANKING ----------------
+let rankingControl;
+
+function updateRanking() {
+    let sorted = geoData.features
+        .slice()
+        .sort((a,b)=>a.properties.ratio - b.properties.ratio)
+        .slice(0,5);
+
+    if (!rankingControl) {
+        rankingControl = L.control({position:"bottomleft"});
+        rankingControl.onAdd = function() {
+            return L.DomUtil.create("div","ranking");
+        };
+        rankingControl.addTo(map);
+    }
+
+    let div = document.querySelector(".ranking");
+
+    div.innerHTML = "<b>취약 지역 TOP 5</b><br>";
+
+    sorted.forEach(f=>{
+        div.innerHTML += `${f.properties.name}<br>`;
+    });
+}
+</script>
+
+</body>
+</html>
